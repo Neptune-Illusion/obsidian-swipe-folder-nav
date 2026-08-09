@@ -13,7 +13,11 @@ const FOLLOWUP_MEASURE_MS = 250;
 const FIT_MARGIN = 0.98;
 
 export class MathFitter {
-	private pendingIds: Set<number> = new Set();
+	// requestAnimationFrame and setTimeout ids live in separate number
+	// spaces; keeping them apart means each can only be cancelled by the
+	// matching API (never by the wrong one).
+	private pendingFrames: Set<number> = new Set();
+	private pendingTimeouts: Set<number> = new Set();
 	private observers: ResizeObserver[] = [];
 	private observedParents: Set<Element> = new Set();
 	private resizeTimeouts: Map<Element, number> = new Map();
@@ -28,11 +32,14 @@ export class MathFitter {
 	}
 
 	detach(): void {
-		for (const id of this.pendingIds) {
+		for (const id of this.pendingFrames) {
 			cancelAnimationFrame(id);
+		}
+		this.pendingFrames.clear();
+		for (const id of this.pendingTimeouts) {
 			window.clearTimeout(id);
 		}
-		this.pendingIds.clear();
+		this.pendingTimeouts.clear();
 		for (const id of this.resizeTimeouts.values()) {
 			window.clearTimeout(id);
 		}
@@ -45,10 +52,18 @@ export class MathFitter {
 	}
 
 	private schedule(fn: () => void): void {
-		const raf = requestAnimationFrame(() => fn());
-		this.pendingIds.add(raf);
-		const timeout = window.setTimeout(() => fn(), FOLLOWUP_MEASURE_MS);
-		this.pendingIds.add(timeout);
+		const raf = requestAnimationFrame(() => {
+			// Remove ourselves so the sets don't grow without bound across a
+			// long session.
+			this.pendingFrames.delete(raf);
+			fn();
+		});
+		this.pendingFrames.add(raf);
+		const timeout = window.setTimeout(() => {
+			this.pendingTimeouts.delete(timeout);
+			fn();
+		}, FOLLOWUP_MEASURE_MS);
+		this.pendingTimeouts.add(timeout);
 	}
 
 	private run(el: HTMLElement): void {
@@ -74,6 +89,11 @@ export class MathFitter {
 			container.style.fontSize = "";
 			const available = parent.clientWidth;
 			const intrinsic = container.scrollWidth;
+			// Observe the parent width unconditionally — a formula that fits
+			// in landscape may overflow after rotating to portrait. observe()
+			// is idempotent via observedParents, so calling it every time is
+			// safe.
+			this.observe(container);
 			if (intrinsic <= available + 1) {
 				return;
 			}
@@ -82,7 +102,6 @@ export class MathFitter {
 				ratio = MIN_SCALE;
 			}
 			container.style.fontSize = (ratio * 100).toFixed(1) + "%";
-			this.observe(container);
 		} catch {
 			// silently skip
 		}
