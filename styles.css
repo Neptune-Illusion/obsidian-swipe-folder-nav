@@ -11,3 +11,21 @@
 	overflow-y: hidden;
 	max-width: 100%;
 }
+
+/* Backstop: if the sidebar drag is partly browser-native rather than pure JS,
+   JS interception cannot stop it. pan-y allows vertical scrolling and pinch
+   zoom while denying horizontal panning gestures in the reading view. */
+.markdown-preview-view {
+	touch-action: pan-y pinch-zoom;
+}
+
+/* Restore horizontal panning inside regions that legitimately scroll
+   sideways, otherwise wide formulas, code blocks and tables become
+   unscrollable. */
+.markdown-preview-view .math-display,
+.markdown-preview-view mjx-container[display="true"],
+.markdown-preview-view pre,
+.markdown-preview-view table,
+.markdown-preview-view .table-wrapper {
+	touch-action: auto;
+}

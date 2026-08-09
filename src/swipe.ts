@@ -4,11 +4,16 @@ import type { SwipeFolderNavSettings } from "./settings";
 const DIRECTION_LOCK_THRESHOLD = 10;
 
 // Lower-tier block threshold: once horizontal-dominant movement exceeds this,
-// stopPropagation fires immediately, before the direction lock at 10px. This
-// shrinks the window in which Obsidian's capture-phase sidebar handler could
-// commit its gesture. stopPropagation alone never blocks native scrolling, so
-// an intended vertical scroll still works normally inside this window.
+// stopImmediatePropagation fires immediately, before the direction lock at 10px.
+// This shrinks the window in which Obsidian's sidebar handler could commit its
+// gesture. It alone never blocks native scrolling, so an intended vertical
+// scroll still works normally inside this window.
 const SIDEBAR_BLOCK_THRESHOLD = 4;
+
+// Replaces the old 25px edge dead-zone: only the PAGING action is skipped near
+// the screen edges (leaving room for OS-level back gestures); interception
+// still applies there so the sidebar can't be pulled out from the edge.
+const EDGE_NO_PAGE_ZONE = 12;
 
 // Obsidian page-level scroll containers must never be treated as local
 // horizontal scroll regions (their scrollWidth > clientWidth once any
@@ -38,6 +43,7 @@ export class SwipeController {
 	private tracking: boolean = false;
 	private direction: "horizontal" | "vertical" | null = null;
 	private scrollableAncestor: HTMLElement | null = null;
+	private startedNearEdge: boolean = false;
 
 	constructor(
 		host: SwipeControllerHost,
@@ -69,18 +75,19 @@ export class SwipeController {
 			return;
 		}
 		this.containerEl = container;
-		// touchstart/touchmove listen on document in the CAPTURE phase:
-		// Obsidian's mobile sidebar handler is suspected to run capture-phase
-		// on an ancestor, which sees events before this container's bubble
-		// phase — stopPropagation there came too late. The entry guards in
-		// the handlers restrict us to touches inside the current note.
-		document.addEventListener("touchstart", this.onTouchStart, {
+		// touchstart/touchmove listen on window in the CAPTURE phase: window is
+		// the top of the capture chain, ahead of document and element listeners.
+		// Capture-phase listeners on the same node fire in registration order,
+		// and Obsidian core registered its gesture handler at app startup —
+		// before this plugin loaded — so even a document-capture listener ran
+		// too late. The entry guards restrict us to touches in the active note.
+		window.addEventListener("touchstart", this.onTouchStart, {
 			passive: true,
 			capture: true,
 		});
 		// touchmove must be non-passive so we can preventDefault once the
 		// gesture is locked as horizontal (blocks Obsidian's sidebar handler).
-		document.addEventListener("touchmove", this.onTouchMove, {
+		window.addEventListener("touchmove", this.onTouchMove, {
 			passive: false,
 			capture: true,
 		});
@@ -100,8 +107,8 @@ export class SwipeController {
 		this.reset();
 		// removeEventListener must pass the same capture flag used at attach,
 		// or the listeners never actually get removed.
-		document.removeEventListener("touchstart", this.onTouchStart, true);
-		document.removeEventListener("touchmove", this.onTouchMove, true);
+		window.removeEventListener("touchstart", this.onTouchStart, true);
+		window.removeEventListener("touchmove", this.onTouchMove, true);
 		if (!container) {
 			return;
 		}
@@ -126,11 +133,10 @@ export class SwipeController {
 			this.reset();
 			return;
 		}
-		// ① screen edge: near left/right edge of the screen, don't take over
-		if (this.nearScreenEdge(touch.clientX)) {
-			this.reset();
-			return;
-		}
+		// ① screen edge: near the left/right edge we still track and intercept
+		// (the sidebar must not pop out), but won't page there — the OS's own
+		// back gestures own that strip.
+		this.startedNearEdge = this.nearScreenEdge(touch.clientX);
 		// ② text selection active
 		if (this.textSelectionActive()) {
 			this.reset();
@@ -172,17 +178,18 @@ export class SwipeController {
 		const dx = touch.clientX - this.touchStart.x;
 		const dy = touch.clientY - this.touchStart.y;
 
-		// Tier 1 — 4px block: horizontal-dominant movement gets stopPropagation
-		// immediately, before the direction lock, denying Obsidian's sidebar
-		// handler the event. No preventDefault and no direction lock here:
-		// stopPropagation only cuts off other JS listeners, never the browser's
-		// native scrolling, so an intended (diagonal/vertical) scroll keeps
-		// working and we don't mis-take over gestures in this window.
+		// Tier 1 — 4px block: horizontal-dominant movement gets
+		// stopImmediatePropagation immediately, before the direction lock,
+		// denying Obsidian's sidebar handler the event. No preventDefault and
+		// no direction lock here: it only cuts off other JS listeners, never
+		// the browser's native scrolling, so an intended (diagonal/vertical)
+		// scroll keeps working and we don't mis-take over gestures here.
+		// Runs unconditionally — the edge strip is intercepted too.
 		if (
 			Math.max(Math.abs(dx), Math.abs(dy)) > SIDEBAR_BLOCK_THRESHOLD &&
 			Math.abs(dx) > Math.abs(dy)
 		) {
-			e.stopPropagation();
+			e.stopImmediatePropagation();
 		}
 
 		// Tier 2 — direction lock: commit to horizontal/vertical once movement
@@ -215,14 +222,14 @@ export class SwipeController {
 				return;
 			}
 			// preventDefault() only stops the browser's default action; it does
-			// NOT stop other JS listeners. Obsidian's sidebar handler sits on an
-			// ancestor (e.g. .app-container / document) and receives the same
-			// bubbling events unless we cut the bubble off — so stopPropagation()
-			// is required to actually block it. Scope is safe: we're already
-			// limited to mobile reading mode and the direction is locked
-			// horizontal, i.e. a gesture we explicitly claim.
+			// NOT stop other JS listeners. Obsidian's sidebar handler sits on
+			// an ancestor and would receive the same events unless we cut them
+			// off — stopImmediatePropagation() also suppresses later listeners
+			// registered on this same node, which plain stopPropagation would
+			// let through. Scope is safe: we're already limited to mobile
+			// reading mode and the direction is locked horizontal.
 			e.preventDefault();
-			e.stopPropagation();
+			e.stopImmediatePropagation();
 		}
 		// Residual risk: the capture phase + 4px tier narrow the window but
 		// cannot fully close the race with OS-level gestures, which is exactly
@@ -250,7 +257,11 @@ export class SwipeController {
 				ady <= s.maxVerticalDrift &&
 				adx >= 2 * ady
 			) {
-				this.onSwipe(dx < 0 ? "left" : "right");
+				// Edge strip: intercepted but never pages — reserved for OS
+				// back gestures.
+				if (!this.startedNearEdge) {
+					this.onSwipe(dx < 0 ? "left" : "right");
+				}
 			}
 		}
 		this.reset();
@@ -265,24 +276,29 @@ export class SwipeController {
 		this.touchStart = null;
 		this.direction = null;
 		this.scrollableAncestor = null;
+		this.startedNearEdge = false;
 	}
 
 	// ① screen edge heuristic (Obsidian native sidebar gestures live here)
 	private nearScreenEdge(clientX: number): boolean {
-		return clientX < 25 || clientX > window.innerWidth - 25;
+		return (
+			clientX < EDGE_NO_PAGE_ZONE ||
+			clientX > window.innerWidth - EDGE_NO_PAGE_ZONE
+		);
 	}
 
 	// ② text selection in progress
 	private textSelectionActive(): boolean {
 		const selection = window.getSelection();
-		if (selection?.isCollapsed === false && this.containerEl) {
+		const container = this.resolveContainer();
+		if (selection?.isCollapsed === false && container) {
 			const anchor = selection.anchorNode;
 			const focus = selection.focusNode;
 			if (
 				anchor &&
 				focus &&
-				this.containerEl.contains(anchor) &&
-				this.containerEl.contains(focus)
+				container.contains(anchor) &&
+				container.contains(focus)
 			) {
 				return true;
 			}
@@ -297,7 +313,10 @@ export class SwipeController {
 	// ③ find the nearest LOCAL horizontal scroll region under the finger,
 	// excluding containerEl itself and Obsidian page-level scroll containers.
 	private findScrollableAncestor(target: EventTarget | null): HTMLElement | null {
-		const container = this.containerEl;
+		// Resolve live: during the attach/detach re-bind window the cached
+		// container is briefly null — a stale boundary here would let the walk
+		// run all the way up to the document root.
+		const container = this.resolveContainer();
 		if (!container) {
 			return null;
 		}
@@ -348,14 +367,25 @@ export class SwipeController {
 		if (!this.enabledInCurrentMode()) {
 			return false;
 		}
-		if (!this.containerEl) {
+		const container = this.resolveContainer();
+		if (!container) {
 			return false;
 		}
 		const target = e.target instanceof Node ? e.target : null;
-		if (!target || !this.containerEl.contains(target)) {
+		if (!target || !container.contains(target)) {
 			return false;
 		}
 		return true;
+	}
+
+	// Read-only: the cached container, falling back to the current leaf's view
+	// container. Never assigns this.containerEl (attach()'s dedup relies on the
+	// cache staying untouched during the re-bind window).
+	private resolveContainer(): HTMLElement | null {
+		return (
+			this.containerEl ??
+			(this.host.app.workspace.getMostRecentLeaf()?.view?.containerEl ?? null)
+		);
 	}
 
 	// Active only on mobile, in a markdown view in reading (preview) mode.
