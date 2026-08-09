@@ -2,6 +2,7 @@ import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { DEFAULT_SETTINGS, SwipeFolderNavSettings } from "./settings";
 import { SwipeController, SwipeDirection } from "./swipe";
 import { FolderNavigator } from "./navigator";
+import { MathFitter } from "./math-fit";
 
 /**
  * Mount-point contracts (implemented).
@@ -37,6 +38,9 @@ export default class SwipeFolderNavPlugin extends Plugin {
 	/** Folder navigation logic (src/navigator.ts). */
 	private navigator: FolderNavigator | null = null;
 
+	/** Wide-math auto-fit (src/math-fit.ts). */
+	private mathFitter: MathFitter | null = null;
+
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
@@ -47,6 +51,10 @@ export default class SwipeFolderNavPlugin extends Plugin {
 			this.handleSwipe(direction)
 		);
 		this.register(() => this.gestureController?.detach());
+
+		this.mathFitter = new MathFitter(this);
+		this.registerMarkdownPostProcessor((el) => this.mathFitter?.fit(el));
+		this.register(() => this.mathFitter?.detach());
 
 		this.addSettingTab(new SwipeFolderNavSettingTab(this.app, this));
 
@@ -71,6 +79,8 @@ export default class SwipeFolderNavPlugin extends Plugin {
 		this.gestureController = null;
 		this.navigator?.detach();
 		this.navigator = null;
+		this.mathFitter?.detach();
+		this.mathFitter = null;
 	}
 
 	/**
