@@ -1,31 +1,22 @@
 /* Styles for Swipe Folder Navigation. */
 
-/* Wide display math overflows the reading view without a scrollbar in
-   Obsidian mobile. Make it scroll horizontally instead of being clipped.
-   This also turns the formula into a real local scroll region, which the
-   gesture layer's direction-aware yield already handles: swipe scrolls the
-   formula first, and only pages once it reaches its edge. */
-.markdown-preview-view .math-display,
-.markdown-preview-view mjx-container[display="true"] {
-	overflow-x: auto;
-	overflow-y: hidden;
+/* Obsidian wraps block math in <span class="math math-display">. A span is
+   inline, and overflow-x has no effect on an inline box — which is why wide
+   formulas never had a usable scrollbar. Promote this wrapper to a block box
+   and make it the single horizontal scroll container for the formula. */
+.markdown-preview-view .math-display {
+	display: block;
 	max-width: 100%;
+	overflow-x: auto;
+	/* Leave room so the scrollbar never sits on top of the glyphs. */
+	padding-bottom: 0.25em;
 }
 
-/* Backstop: if the sidebar drag is partly browser-native rather than pure JS,
-   JS interception cannot stop it. pan-y allows vertical scrolling and pinch
-   zoom while denying horizontal panning gestures in the reading view. */
-.markdown-preview-view {
-	touch-action: pan-y pinch-zoom;
-}
-
-/* Restore horizontal panning inside regions that legitimately scroll
-   sideways, otherwise wide formulas, code blocks and tables become
-   unscrollable. */
-.markdown-preview-view .math-display,
-.markdown-preview-view mjx-container[display="true"],
-.markdown-preview-view pre,
-.markdown-preview-view table,
-.markdown-preview-view .table-wrapper {
-	touch-action: auto;
+/* Let the MathJax box keep its intrinsic width, otherwise the wrapper above
+   has nothing to scroll. Constraining this width is what squeezed formulas,
+   and overflow-y: hidden clipped tall constructs (fractions, integrals,
+   sums) that legitimately extend past the line box. */
+.markdown-preview-view mjx-container[display="true"] {
+	max-width: none;
+	overflow: visible;
 }
