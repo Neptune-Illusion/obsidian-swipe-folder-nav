@@ -3,6 +3,13 @@ import type { SwipeFolderNavSettings } from "./settings";
 
 const DIRECTION_LOCK_THRESHOLD = 10;
 
+// Lower-tier block threshold: once horizontal-dominant movement exceeds this,
+// stopPropagation fires immediately, before the direction lock at 10px. This
+// shrinks the window in which Obsidian's capture-phase sidebar handler could
+// commit its gesture. stopPropagation alone never blocks native scrolling, so
+// an intended vertical scroll still works normally inside this window.
+const SIDEBAR_BLOCK_THRESHOLD = 4;
+
 // Obsidian page-level scroll containers must never be treated as local
 // horizontal scroll regions (their scrollWidth > clientWidth once any
 // content — e.g. a wide LaTeX formula — overflows the viewport).
@@ -62,14 +69,23 @@ export class SwipeController {
 			return;
 		}
 		this.containerEl = container;
-		container.addEventListener("touchstart", this.onTouchStart, {
+		// touchstart/touchmove listen on document in the CAPTURE phase:
+		// Obsidian's mobile sidebar handler is suspected to run capture-phase
+		// on an ancestor, which sees events before this container's bubble
+		// phase — stopPropagation there came too late. The entry guards in
+		// the handlers restrict us to touches inside the current note.
+		document.addEventListener("touchstart", this.onTouchStart, {
 			passive: true,
+			capture: true,
 		});
 		// touchmove must be non-passive so we can preventDefault once the
 		// gesture is locked as horizontal (blocks Obsidian's sidebar handler).
-		container.addEventListener("touchmove", this.onTouchMove, {
+		document.addEventListener("touchmove", this.onTouchMove, {
 			passive: false,
+			capture: true,
 		});
+		// touchend/touchcancel stay on the container in bubble phase; they
+		// only resolve gestures we already claimed on that container.
 		container.addEventListener("touchend", this.onTouchEnd, {
 			passive: true,
 		});
@@ -82,17 +98,25 @@ export class SwipeController {
 		const container = this.containerEl;
 		this.containerEl = null;
 		this.reset();
+		// removeEventListener must pass the same capture flag used at attach,
+		// or the listeners never actually get removed.
+		document.removeEventListener("touchstart", this.onTouchStart, true);
+		document.removeEventListener("touchmove", this.onTouchMove, true);
 		if (!container) {
 			return;
 		}
-		container.removeEventListener("touchstart", this.onTouchStart);
-		container.removeEventListener("touchmove", this.onTouchMove);
 		container.removeEventListener("touchend", this.onTouchEnd);
 		container.removeEventListener("touchcancel", this.onTouchCancel);
 	}
 
 	// ⑤ multi-touch: ignore the gesture if more than one finger is down
 	private onTouchStart = (e: TouchEvent): void => {
+		// document-level listener: must not touch events outside the active
+		// note (sidebar, settings, command palette) or non-mobile / non-
+		// reading-mode sessions.
+		if (!this.isWithinActiveNote(e)) {
+			return;
+		}
 		if (e.touches.length > 1) {
 			this.reset();
 			return;
@@ -124,6 +148,10 @@ export class SwipeController {
 	};
 
 	private onTouchMove = (e: TouchEvent): void => {
+		// Same entry guard as touchstart: ignore events outside the note.
+		if (!this.isWithinActiveNote(e)) {
+			return;
+		}
 		if (!this.tracking || !this.touchStart) {
 			return;
 		}
@@ -144,8 +172,21 @@ export class SwipeController {
 		const dx = touch.clientX - this.touchStart.x;
 		const dy = touch.clientY - this.touchStart.y;
 
-		// Direction lock: commit to horizontal/vertical once movement exceeds
-		// the lock threshold, then stick with it for the rest of the gesture.
+		// Tier 1 — 4px block: horizontal-dominant movement gets stopPropagation
+		// immediately, before the direction lock, denying Obsidian's sidebar
+		// handler the event. No preventDefault and no direction lock here:
+		// stopPropagation only cuts off other JS listeners, never the browser's
+		// native scrolling, so an intended (diagonal/vertical) scroll keeps
+		// working and we don't mis-take over gestures in this window.
+		if (
+			Math.max(Math.abs(dx), Math.abs(dy)) > SIDEBAR_BLOCK_THRESHOLD &&
+			Math.abs(dx) > Math.abs(dy)
+		) {
+			e.stopPropagation();
+		}
+
+		// Tier 2 — direction lock: commit to horizontal/vertical once movement
+		// exceeds the lock threshold, then stick with it for the gesture.
 		if (this.direction === null) {
 			if (Math.max(Math.abs(dx), Math.abs(dy)) <= DIRECTION_LOCK_THRESHOLD) {
 				return;
@@ -183,14 +224,9 @@ export class SwipeController {
 			e.preventDefault();
 			e.stopPropagation();
 		}
-		// Known residual risk: direction locking only kicks in once the finger
-		// has moved past DIRECTION_LOCK_THRESHOLD (10px). Inside that window we
-		// block nothing, so if Obsidian commits its sidebar gesture within the
-		// first 10px we cannot stop it. 10px is a deliberate tradeoff — smaller
-		// misreads slight finger jitter as horizontal, larger leaves a wider
-		// window for the native gesture. If real-device testing still shows the
-		// sidebar opening, fall back to capturing touch events on the ancestor
-		// in the capture phase (more aggressive; not implemented yet).
+		// Residual risk: the capture phase + 4px tier narrow the window but
+		// cannot fully close the race with OS-level gestures, which is exactly
+		// what nearScreenEdge (25px) is reserved for — that stays untouched.
 	};
 
 	private onTouchEnd = (e: TouchEvent): void => {
@@ -303,6 +339,23 @@ export class SwipeController {
 			return el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
 		}
 		return el.scrollLeft > 1;
+	}
+
+	// Entry guard for the document-level listeners: never act on touches
+	// outside the current note's content area, and never outside mobile
+	// reading mode. sidebar / settings / command palette touches fall through.
+	private isWithinActiveNote(e: TouchEvent): boolean {
+		if (!this.enabledInCurrentMode()) {
+			return false;
+		}
+		if (!this.containerEl) {
+			return false;
+		}
+		const target = e.target instanceof Node ? e.target : null;
+		if (!target || !this.containerEl.contains(target)) {
+			return false;
+		}
+		return true;
 	}
 
 	// Active only on mobile, in a markdown view in reading (preview) mode.

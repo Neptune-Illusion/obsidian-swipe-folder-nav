@@ -1,1 +1,13 @@
 /* Styles for Swipe Folder Navigation. */
+
+/* Wide display math overflows the reading view without a scrollbar in
+   Obsidian mobile. Make it scroll horizontally instead of being clipped.
+   This also turns the formula into a real local scroll region, which the
+   gesture layer's direction-aware yield already handles: swipe scrolls the
+   formula first, and only pages once it reaches its edge. */
+.markdown-preview-view .math-display,
+.markdown-preview-view mjx-container[display="true"] {
+	overflow-x: auto;
+	overflow-y: hidden;
+	max-width: 100%;
+}
