@@ -81,7 +81,11 @@ export default class SwipeFolderNavPlugin extends Plugin {
 		void this.navigator?.openRelative(direction === "left" ? 1 : -1);
 	}
 
-	/** Re-evaluate gesture attach state after settings that affect attach() change. */
+	/**
+	 * Re-evaluate the gesture attach state. No caller remains in the settings
+	 * panel since enableInEditMode was removed in 0.1.1; kept for programmatic
+	 * re-attach or future settings that affect attach() decisions.
+	 */
 	refreshGesture(): void {
 		this.gestureController?.attach();
 	}
@@ -99,7 +103,7 @@ export default class SwipeFolderNavPlugin extends Plugin {
 	}
 }
 
-/** Settings tab — all 7 plugin settings. */
+/** Settings tab — all 6 plugin settings. */
 export class SwipeFolderNavSettingTab extends PluginSettingTab {
 	plugin: SwipeFolderNavPlugin;
 
@@ -179,19 +183,6 @@ export class SwipeFolderNavSettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						this.plugin.settings.maxVerticalDrift = value;
 						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("编辑模式启用")
-			.setDesc("关闭后仅在阅读模式下响应滑动")
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.enableInEditMode)
-					.onChange(async (value) => {
-						this.plugin.settings.enableInEditMode = value;
-						await this.plugin.saveSettings();
-						this.plugin.refreshGesture();
 					})
 			);
 

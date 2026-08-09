@@ -1,4 +1,4 @@
-import { App, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import { App, Notice, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, SwipeFolderNavSettings } from "./settings";
 
 export interface FolderNavigatorPlugin {
@@ -10,6 +10,7 @@ export interface FolderNavigatorPlugin {
 export class FolderNavigator {
 	private readonly app: App;
 	private readonly plugin: FolderNavigatorPlugin;
+	private navigating: boolean = false;
 
 	constructor(plugin: FolderNavigatorPlugin) {
 		this.plugin = plugin;
@@ -76,44 +77,43 @@ export class FolderNavigator {
 	/** Open the adjacent note in the current leaf. Returns false when navigation is unavailable. */
 	async openRelative(offset: number): Promise<boolean> {
 		if (offset !== 1 && offset !== -1) return false;
-		const current = this.app.workspace.getActiveFile();
-		if (!current) return false;
-		// A workspace can briefly retain a file object after an external deletion.
-		// Do not navigate using that stale object or its old sibling list.
-		const resolved = this.app.vault.getFileByPath(current.path);
-		if (resolved === null) return false;
-		const siblings = this.getSiblings(current);
-		const index = siblings.findIndex((candidate) => candidate.path === current.path);
-		if (index < 0) return false;
+		// B4: reject overlapping navigations from rapid successive swipes.
+		if (this.navigating) return false;
+		this.navigating = true;
+		try {
+			const current = this.app.workspace.getActiveFile();
+			if (!current) return false;
+			// A workspace can briefly retain a file object after an external deletion.
+			// Do not navigate using that stale object or its old sibling list.
+			const resolved = this.app.vault.getFileByPath(current.path);
+			if (resolved === null) return false;
+			const siblings = this.getSiblings(current);
+			const index = siblings.findIndex((candidate) => candidate.path === current.path);
+			if (index < 0) return false;
 
-		let targetIndex = index + offset;
-		if (targetIndex < 0 || targetIndex >= siblings.length) {
-			if (!this.settings.wrapAround || siblings.length < 2) {
-				if (this.settings.showNotice) {
-					new Notice(offset < 0 ? "Already at the first note" : "Already at the last note");
+			let targetIndex = index + offset;
+			if (targetIndex < 0 || targetIndex >= siblings.length) {
+				if (!this.settings.wrapAround || siblings.length < 2) {
+					if (this.settings.showNotice) {
+						new Notice(offset < 0 ? "Already at the first note" : "Already at the last note");
+					}
+					return false;
 				}
-				return false;
+				targetIndex = targetIndex < 0 ? siblings.length - 1 : 0;
 			}
-			targetIndex = targetIndex < 0 ? siblings.length - 1 : 0;
+
+			const leaf = this.app.workspace.getMostRecentLeaf();
+			if (!leaf) return false;
+			const target = siblings[targetIndex];
+			// No explicit viewState: opening in the same leaf naturally keeps
+			// the current mode and does a lightweight content swap instead of
+			// a full view rebuild (the main source of the flicker).
+			await leaf.openFile(target);
+			if (this.settings.showNotice) new Notice(target.name);
+			return true;
+		} finally {
+			this.navigating = false;
 		}
-
-		const leaf = this.app.workspace.getMostRecentLeaf();
-		if (!leaf) return false;
-		const target = siblings[targetIndex];
-		const viewState = this.getOpenState(leaf);
-		await leaf.openFile(target, viewState);
-		if (this.settings.showNotice) new Notice(target.name);
-		return true;
-	}
-
-	private getOpenState(leaf: WorkspaceLeaf): { state?: Record<string, unknown>; active?: boolean } | undefined {
-		const state = leaf.getViewState?.();
-		const mode = state?.state?.mode ??
-			("getMode" in leaf.view && typeof leaf.view.getMode === "function"
-				? leaf.view.getMode()
-				: undefined);
-		if (mode === undefined) return undefined;
-		return { state: { mode }, active: true };
 	}
 }
 

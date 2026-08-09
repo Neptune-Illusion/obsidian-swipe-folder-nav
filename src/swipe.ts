@@ -1,5 +1,7 @@
-import type { App, Plugin } from "obsidian";
+import { Platform, type App, type Plugin } from "obsidian";
 import type { SwipeFolderNavSettings } from "./settings";
+
+const DIRECTION_LOCK_THRESHOLD = 10;
 
 export type SwipeDirection = "left" | "right";
 
@@ -16,6 +18,7 @@ export class SwipeController {
 	private containerEl: HTMLElement | null = null;
 	private touchStart: { x: number; y: number } | null = null;
 	private tracking: boolean = false;
+	private direction: "horizontal" | "vertical" | null = null;
 
 	constructor(
 		host: SwipeControllerHost,
@@ -26,7 +29,7 @@ export class SwipeController {
 		host.registerEvent(
 			host.app.workspace.on("active-leaf-change", () => this.attach())
 		);
-		// BUG-1: mode toggles (reading/edit) on the same leaf don't fire
+		// Mode toggles (reading/edit) on the same leaf don't fire
 		// active-leaf-change, so re-attach on layout-change too.
 		host.registerEvent(
 			host.app.workspace.on("layout-change", () => this.attach())
@@ -35,20 +38,25 @@ export class SwipeController {
 	}
 
 	attach(): void {
-		this.detach();
-		if (!this.enabledInCurrentMode()) {
+		const container = this.host.app.workspace.getMostRecentLeaf()?.view?.containerEl;
+		// Dedup: same container + mode still enabled → nothing to rebind.
+		// openFile fires both active-leaf-change and layout-change on every
+		// page turn; skipping the redundant detach/rebind avoids churn.
+		if (container === this.containerEl && this.enabledInCurrentMode()) {
 			return;
 		}
-		const container = this.host.app.workspace.getMostRecentLeaf()?.view?.containerEl;
-		if (!container) {
+		this.detach();
+		if (!container || !this.enabledInCurrentMode()) {
 			return;
 		}
 		this.containerEl = container;
 		container.addEventListener("touchstart", this.onTouchStart, {
 			passive: true,
 		});
+		// touchmove must be non-passive so we can preventDefault once the
+		// gesture is locked as horizontal (blocks Obsidian's sidebar handler).
 		container.addEventListener("touchmove", this.onTouchMove, {
-			passive: true,
+			passive: false,
 		});
 		container.addEventListener("touchend", this.onTouchEnd, {
 			passive: true,
@@ -98,11 +106,12 @@ export class SwipeController {
 			return;
 		}
 		this.touchStart = { x: touch.clientX, y: touch.clientY };
+		this.direction = null;
 		this.tracking = true;
 	};
 
 	private onTouchMove = (e: TouchEvent): void => {
-		if (!this.tracking) {
+		if (!this.tracking || !this.touchStart) {
 			return;
 		}
 		// ⑤ a second finger joined mid-gesture: abort immediately
@@ -115,10 +124,56 @@ export class SwipeController {
 			this.reset();
 			return;
 		}
+		const touch = e.touches[0];
+		if (!touch) {
+			return;
+		}
+		const dx = touch.clientX - this.touchStart.x;
+		const dy = touch.clientY - this.touchStart.y;
+
+		// Direction lock: commit to horizontal/vertical once movement exceeds
+		// the lock threshold, then stick with it for the rest of the gesture.
+		if (this.direction === null) {
+			if (Math.max(Math.abs(dx), Math.abs(dy)) <= DIRECTION_LOCK_THRESHOLD) {
+				return;
+			}
+			if (Math.abs(dx) > Math.abs(dy)) {
+				this.direction = "horizontal";
+			} else {
+				// Vertical scroll: hand back to native scrolling entirely.
+				this.direction = "vertical";
+				this.reset();
+				return;
+			}
+		}
+
+		if (this.direction === "horizontal") {
+			// preventDefault() only stops the browser's default action; it does
+			// NOT stop other JS listeners. Obsidian's sidebar handler sits on an
+			// ancestor (e.g. .app-container / document) and receives the same
+			// bubbling events unless we cut the bubble off — so stopPropagation()
+			// is required to actually block it. Scope is safe: we're already
+			// limited to mobile reading mode and the direction is locked
+			// horizontal, i.e. a gesture we explicitly claim.
+			e.preventDefault();
+			e.stopPropagation();
+		}
+		// Known residual risk: direction locking only kicks in once the finger
+		// has moved past DIRECTION_LOCK_THRESHOLD (10px). Inside that window we
+		// block nothing, so if Obsidian commits its sidebar gesture within the
+		// first 10px we cannot stop it. 10px is a deliberate tradeoff — smaller
+		// misreads slight finger jitter as horizontal, larger leaves a wider
+		// window for the native gesture. If real-device testing still shows the
+		// sidebar opening, fall back to capturing touch events on the ancestor
+		// in the capture phase (more aggressive; not implemented yet).
 	};
 
 	private onTouchEnd = (e: TouchEvent): void => {
-		if (!this.tracking || !this.touchStart) {
+		if (
+			!this.tracking ||
+			!this.touchStart ||
+			this.direction !== "horizontal"
+		) {
 			this.reset();
 			return;
 		}
@@ -147,6 +202,7 @@ export class SwipeController {
 	private reset(): void {
 		this.tracking = false;
 		this.touchStart = null;
+		this.direction = null;
 	}
 
 	// ① screen edge heuristic (Obsidian native sidebar gestures live here)
@@ -161,7 +217,8 @@ export class SwipeController {
 			const anchor = selection.anchorNode;
 			const focus = selection.focusNode;
 			if (
-				anchor && focus &&
+				anchor &&
+				focus &&
 				this.containerEl.contains(anchor) &&
 				this.containerEl.contains(focus)
 			) {
@@ -194,20 +251,17 @@ export class SwipeController {
 		return false;
 	}
 
-	// ⑥ respect enableInEditMode: when false, only reading mode is enabled
+	// Active only on mobile, in a markdown view in reading (preview) mode.
+	// Only MarkdownView exposes getMode(); other view types fail the check.
 	private enabledInCurrentMode(): boolean {
-		if (this.host.settings.enableInEditMode !== false) {
-			return true;
+		if (!Platform.isMobile) {
+			return false;
 		}
-		const view = this.host.app.workspace.getMostRecentLeaf()?.view;
-		return !this.isEditMode(view);
-	}
-
-	private isEditMode(view: unknown): boolean {
-		const v = view as { getMode?: () => string; editor?: unknown };
-		if (typeof v?.getMode === "function") {
-			return v.getMode() === "source";
-		}
-		return !!v?.editor;
+		const view = this.host.app.workspace.getMostRecentLeaf()?.view as {
+			getMode?: () => string;
+		} | null;
+		return (
+			typeof view?.getMode === "function" && view.getMode() === "preview"
+		);
 	}
 }
