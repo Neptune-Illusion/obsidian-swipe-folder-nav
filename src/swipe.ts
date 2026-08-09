@@ -3,6 +3,17 @@ import type { SwipeFolderNavSettings } from "./settings";
 
 const DIRECTION_LOCK_THRESHOLD = 10;
 
+// Obsidian page-level scroll containers must never be treated as local
+// horizontal scroll regions (their scrollWidth > clientWidth once any
+// content — e.g. a wide LaTeX formula — overflows the viewport).
+const PAGE_LEVEL_SCROLL_CLASSES = [
+	"markdown-preview-view",
+	"markdown-preview-sizer",
+	"markdown-reading-view",
+	"view-content",
+	"workspace-leaf-content",
+];
+
 export type SwipeDirection = "left" | "right";
 
 export interface SwipeControllerHost {
@@ -19,6 +30,7 @@ export class SwipeController {
 	private touchStart: { x: number; y: number } | null = null;
 	private tracking: boolean = false;
 	private direction: "horizontal" | "vertical" | null = null;
+	private scrollableAncestor: HTMLElement | null = null;
 
 	constructor(
 		host: SwipeControllerHost,
@@ -100,11 +112,12 @@ export class SwipeController {
 			this.reset();
 			return;
 		}
-		// ③ horizontally scrollable ancestor (code blocks / tables)
-		if (this.insideScrollable(e.target)) {
-			this.reset();
-			return;
-		}
+		// ③ record the nearest local horizontal scroll region (code blocks,
+		// tables, wide formulas) under the finger, if any. Page-level scroll
+		// containers are excluded, so a wide formula on the page no longer
+		// kills swiping for the whole note. We still track the gesture; the
+		// scrollable region only yields to native scrolling in touchmove.
+		this.scrollableAncestor = this.findScrollableAncestor(e.target);
 		this.touchStart = { x: touch.clientX, y: touch.clientY };
 		this.direction = null;
 		this.tracking = true;
@@ -148,6 +161,18 @@ export class SwipeController {
 		}
 
 		if (this.direction === "horizontal") {
+			// Direction-aware yield: if the finger is on a local horizontal
+			// scroll region (formula/code/table) that still has room in the
+			// swipe direction, hand this gesture to native scrolling instead
+			// of paging. Once the region is scrolled to its boundary, the
+			// next swipe pages normally — the region is never a dead zone.
+			if (
+				this.scrollableAncestor &&
+				this.canStillScroll(this.scrollableAncestor, dx)
+			) {
+				this.reset();
+				return;
+			}
 			// preventDefault() only stops the browser's default action; it does
 			// NOT stop other JS listeners. Obsidian's sidebar handler sits on an
 			// ancestor (e.g. .app-container / document) and receives the same
@@ -203,6 +228,7 @@ export class SwipeController {
 		this.tracking = false;
 		this.touchStart = null;
 		this.direction = null;
+		this.scrollableAncestor = null;
 	}
 
 	// ① screen edge heuristic (Obsidian native sidebar gestures live here)
@@ -232,23 +258,51 @@ export class SwipeController {
 		return typeof sel === "string" && sel.length > 0;
 	}
 
-	// ③ any ancestor up to the content container that scrolls horizontally
-	private insideScrollable(target: EventTarget | null): boolean {
+	// ③ find the nearest LOCAL horizontal scroll region under the finger,
+	// excluding containerEl itself and Obsidian page-level scroll containers.
+	private findScrollableAncestor(target: EventTarget | null): HTMLElement | null {
 		const container = this.containerEl;
+		if (!container) {
+			return null;
+		}
 		let el = target instanceof Element ? target : null;
-		while (el && container) {
+		while (el && el !== container) {
+			if (this.isPageLevelScrollContainer(el)) {
+				el = el.parentElement;
+				continue;
+			}
 			if (el.scrollWidth > el.clientWidth + 1) {
 				const ox = window.getComputedStyle(el).overflowX;
 				if (ox === "auto" || ox === "scroll" || ox === "overlay") {
-					return true;
+					return el as HTMLElement;
 				}
-			}
-			if (el === container) {
-				break;
 			}
 			el = el.parentElement;
 		}
-		return false;
+		return null;
+	}
+
+	// Page-level containers never count as local scroll regions: either an
+	// Obsidian class or an element as wide as the note container (covers
+	// theme-custom class names via the size fallback).
+	private isPageLevelScrollContainer(el: Element): boolean {
+		if (
+			this.containerEl &&
+			el.clientWidth >= this.containerEl.clientWidth - 8
+		) {
+			return true;
+		}
+		return PAGE_LEVEL_SCROLL_CLASSES.some((cls) => el.classList.contains(cls));
+	}
+
+	// Whether el still has content to scroll towards in the swipe direction.
+	// dx < 0 (finger moves left) reveals content to the right; dx > 0 reveals
+	// content to the left.
+	private canStillScroll(el: HTMLElement, dx: number): boolean {
+		if (dx < 0) {
+			return el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+		}
+		return el.scrollLeft > 1;
 	}
 
 	// Active only on mobile, in a markdown view in reading (preview) mode.
