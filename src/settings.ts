@@ -11,6 +11,10 @@ export interface SwipeFolderNavSettings {
 	maxVerticalDrift: number;
 	/** Show a notice with the target note's name when switching. */
 	showNotice: boolean;
+	/** Scope for the desktop-only navigation commands. */
+	desktopNavigationScope: "folder" | "vault";
+	/** Follow the active File Explorer sort order for desktop commands. */
+	desktopFollowFileExplorerSort: boolean;
 }
 
 export const DEFAULT_SETTINGS: SwipeFolderNavSettings = {
@@ -20,4 +24,6 @@ export const DEFAULT_SETTINGS: SwipeFolderNavSettings = {
 	minSwipeDistance: 80,
 	maxVerticalDrift: 60,
 	showNotice: false,
+	desktopNavigationScope: "folder",
+	desktopFollowFileExplorerSort: true,
 };

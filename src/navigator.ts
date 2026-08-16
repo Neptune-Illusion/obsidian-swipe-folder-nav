@@ -48,6 +48,25 @@ export class FolderNavigator {
 		return siblings;
 	}
 
+	/** Return files for the desktop commands in the configured scope. */
+	getDesktopFiles(file: TFile): TFile[] {
+		const files =
+			this.settings.desktopNavigationScope === "vault"
+				? this.app.vault.getMarkdownFiles()
+				: file.parent?.children.filter(
+						(child): child is TFile =>
+							"extension" in child && child.extension === "md"
+					)
+					?? [];
+
+		if (!this.settings.desktopFollowFileExplorerSort) {
+			return this.sortFiles(files, this.settings.sortMode, this.settings.sortReverse);
+		}
+
+		const { field, reverse } = this.getFileExplorerSort();
+		return this.sortFiles(files, field, reverse);
+	}
+
 	getNext(file?: TFile | null): TFile | null {
 		return this.getRelative(file, 1, this.settings.wrapAround);
 	}
@@ -76,6 +95,18 @@ export class FolderNavigator {
 
 	/** Open the adjacent note in the current leaf. Returns false when navigation is unavailable. */
 	async openRelative(offset: number): Promise<boolean> {
+		return this.openFromFiles(offset, (current) => this.getSiblings(current));
+	}
+
+	/** Open an adjacent note using the desktop scope and File Explorer order. */
+	async openDesktopRelative(offset: number): Promise<boolean> {
+		return this.openFromFiles(offset, (current) => this.getDesktopFiles(current));
+	}
+
+	private async openFromFiles(
+		offset: number,
+		getFiles: (current: TFile) => TFile[]
+	): Promise<boolean> {
 		if (offset !== 1 && offset !== -1) return false;
 		// B4: reject overlapping navigations from rapid successive swipes.
 		if (this.navigating) return false;
@@ -87,7 +118,7 @@ export class FolderNavigator {
 			// Do not navigate using that stale object or its old sibling list.
 			const resolved = this.app.vault.getFileByPath(current.path);
 			if (resolved === null) return false;
-			const siblings = this.getSiblings(current);
+			const siblings = getFiles(resolved);
 			const index = siblings.findIndex((candidate) => candidate.path === current.path);
 			if (index < 0) return false;
 
@@ -113,6 +144,48 @@ export class FolderNavigator {
 			return true;
 		} finally {
 			this.navigating = false;
+		}
+	}
+
+	private sortFiles(
+		files: TFile[],
+		field: "name" | "mtime" | "ctime",
+		reverse: boolean
+	): TFile[] {
+		const direction = reverse ? -1 : 1;
+		return [...files].sort((left, right) => {
+			const result =
+				field === "name"
+					? left.basename.localeCompare(right.basename, undefined, {
+							numeric: true,
+						sensitivity: "base",
+					})
+					: left.stat[field] - right.stat[field];
+			return direction * (result || left.path.localeCompare(right.path));
+		});
+	}
+
+	private getFileExplorerSort(): {
+		field: "name" | "mtime" | "ctime";
+		reverse: boolean;
+	} {
+		const fileExplorer = this.app.workspace.getLeavesOfType("file-explorer")[0];
+		const sortOrder = fileExplorer?.view?.getState().sortOrder;
+
+		switch (sortOrder) {
+			case "alphabeticalReverse":
+				return { field: "name", reverse: true };
+			case "byCreatedTime":
+				return { field: "ctime", reverse: true };
+			case "byCreatedTimeReverse":
+				return { field: "ctime", reverse: false };
+			case "byModifiedTime":
+				return { field: "mtime", reverse: true };
+			case "byModifiedTimeReverse":
+				return { field: "mtime", reverse: false };
+			case "alphabetical":
+			default:
+				return { field: "name", reverse: false };
 		}
 	}
 }

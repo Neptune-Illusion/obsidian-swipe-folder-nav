@@ -1,20 +1,21 @@
 # FDS：Swipe Folder Navigation 技术功能说明书
 
-版本对应：0.1.0 – 0.1.8
-适用范围：Obsidian 移动端（iOS / Android），阅读模式
+版本对应：0.1.0 – 0.1.9
+适用范围：Obsidian 移动端（iOS / Android）阅读模式手势，以及桌面端命令
 分发方式：GitHub Release + BRAT
 
 ---
 
 ## 1. 项目概述
 
-Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-nav`）。核心功能是：在阅读模式下左右滑动屏幕，切换当前笔记所在文件夹内的上一篇 / 下一篇笔记。
+Swipe Folder Navigation 是一个 Obsidian 笔记导航插件（id：`swipe-folder-nav`）。核心功能是：在移动端阅读模式下左右滑动，或在桌面端执行命令，切换 Markdown 笔记。
 
 - 只导航 Markdown 文件（`.md`）
 - 只统计当前文件所在文件夹的直接子文件，不递归子文件夹
 - 默认按文件名排序（可改为按修改时间 / 创建时间）
 - 到头默认不循环（可选开启循环）
-- 仅在移动端、且当前视图为 Markdown 阅读（预览）模式时激活，桌面端与其他视图类型不响应
+- 手势仅在移动端、且当前视图为 Markdown 阅读（预览）模式时激活
+- 桌面端提供前后文件导航和滚动至笔记末尾命令；导航范围可选当前文件夹或整个 vault
 
 从 0.1.7 起附带第二个功能：阅读模式下超出页面宽度的 LaTeX 公式会被自动等比缩小到页面宽度以内。
 
@@ -55,16 +56,17 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 
 ## 3. 系统架构
 
-四个源文件模块，职责单一，通过 `main.ts` 装配：
+五个源文件模块，职责单一，通过 `main.ts` 装配：
 
 | 文件 | 类 | 职责 |
 |---|---|---|
 | `src/main.ts` | `SwipeFolderNavPlugin` | 插件入口、生命周期、命令注册、设置页；把手势回调翻译为导航调用 |
 | `src/swipe.ts` | `SwipeController` | 手势层：触摸事件的监听、拦截、方向判定、入口守卫 |
 | `src/navigator.ts` | `FolderNavigator` | 导航层：找兄弟文件、排序、并发保护、打开相邻笔记 |
+| `src/desktop-navigation.ts` | `scrollPastEnd` | 桌面端编辑器末尾滚动 |
 | `src/math-fit.ts` | `MathFitter` | 宽公式自动缩放的测量与适配 |
 
-配套文件：`src/settings.ts`（设置结构与默认值，6 项）、`styles.css`（三处 CSS 规则，见 4.5、4.6）。
+配套文件：`src/settings.ts`（设置结构与默认值，8 项）、`styles.css`（三处 CSS 规则，见 4.5、4.6）。
 
 ### 3.1 协作流程
 
@@ -78,7 +80,7 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 
 `SwipeController` 构造时即注册 `active-leaf-change` 与 `layout-change` 两个工作区事件（统一指向 `attach()`），随后立即 `attach()`。监听器一旦绑定就常驻到插件卸载（`listenersBound` 幂等标志保证 `attach()` 不重复绑定）；「是否启用」的判定不放在绑定时刻，而是放在每次触摸发生时执行（原因见 4.4）。
 
-### 3.3 设置项（6 项）
+### 3.3 设置项（8 项）
 
 见第 5 章表 1。
 
@@ -232,7 +234,14 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 - 边界提示：到达首 / 末篇且未开启循环时，若 `showNotice` 开启则提示「Already at the first note」/「Already at the last note」。
 - 陈旧文件保护：`openRelative()` 先用 `vault.getFileByPath()` 校验当前文件仍存在（工作区可能在外部删除后短暂保留文件对象），不存在则放弃导航。
 
-### 5.2 手势判定流水线（`src/swipe.ts`）
+### 5.2 桌面端导航规则
+
+- 命令仅在 `Platform.isDesktop` 为 true 时注册，移动端不显示也不改变手势行为。
+- 范围：`desktopNavigationScope` 为 `folder` 时只取当前文件夹的直接 Markdown 子文件；为 `vault` 时取 vault 内全部 Markdown 文件。
+- 排序：`desktopFollowFileExplorerSort` 默认开启，读取 File Explorer 的文件名、创建时间或修改时间及正反向状态；关闭时回退到移动端的 `sortMode` 与 `sortReverse` 设置。
+- `Scroll past end of note` 将编辑器光标移到末行，并通过 CodeMirror 的 `scrollDOM` 请求滚动至末尾后半个视口的位置。
+
+### 5.3 手势判定流水线（`src/swipe.ts`）
 
 监听布局：`touchstart` / `touchend` / `touchcancel` 常驻挂 `window` 捕获阶段（passive）；`touchmove` 只在跟踪手势期间动态绑定到 `window` 捕获（非 passive），`reset()` 时摘除。
 
@@ -249,7 +258,7 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 3. **touchend**：仅当在跟踪且方向已锁定为横向时判定：`|dx| >= minSwipeDistance` 且 `|dy| <= maxVerticalDrift` 且 `|dx| >= 2 * |dy|` → 触发翻页（左滑下一篇 +1，右滑上一篇 -1）。任何情况下最后都 `reset()`。
 4. **touchcancel**：直接复位。
 
-### 5.3 设置项
+### 5.4 设置项
 
 | 设置项 | 默认值 | 说明 |
 |---|---|---|
@@ -259,17 +268,25 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 | 最小滑动距离 | 80px | 触发切换的最小水平位移 |
 | 最大垂直偏移 | 60px | 垂直位移超过该值视为滚动而非滑动 |
 | 切换时提示 | 关 | 切换后在底部显示目标笔记名 |
+| 桌面端导航范围 | 当前文件夹 | `folder` / `vault`，仅影响桌面端命令 |
+| 跟随文件浏览器排序 | 开 | 桌面端命令使用 File Explorer 当前排序 |
 
 `settings.ts` 的 `DEFAULT_SETTINGS` 与设置页一一对应，设置变更通过 `saveData()` 持久化。
 
-### 5.4 命令（2 个）
+### 5.5 命令（5 个）
 
 - `goto-previous-note`：跳到上一篇（等价右滑）
 - `goto-next-note`：跳到下一篇（等价左滑）
 
 命令直接调 `navigator.openRelative(±1)`，可在命令面板或绑定快捷键使用；命令不受「仅阅读模式」限制，因为命令属于显式触发而非手势。
 
-### 5.5 宽公式适配（`src/math-fit.ts`）
+- `desktop-navigate-previous-file`：`Navigate to previous file`，桌面端按设置范围与排序打开上一 Markdown 文件。
+- `desktop-navigate-next-file`：`Navigate to next file`，桌面端按设置范围与排序打开下一 Markdown 文件。
+- `desktop-scroll-past-end`：`Scroll past end of note`，桌面端将编辑器滚动至笔记末尾后。
+
+前两个桌面端命令直接调 `navigator.openDesktopRelative(±1)`；仅在存在活动文件时可用。原有两个命令及移动端手势继续使用 `openRelative(±1)`。
+
+### 5.6 宽公式适配（`src/math-fit.ts`）
 
 - 通过 `registerMarkdownPostProcessor` 对每个渲染完成的元素调 `fit()`。
 - 测量：先重置 `fontSize`，再比对 `parent.clientWidth` 与 `container.scrollWidth`；仅在 `intrinsic > available + 1` 时缩小，比率 = `available / intrinsic × 0.98`，下限 `0.55`。
@@ -304,13 +321,13 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 
 ## 7. 已知限制
 
-1. **仅移动端阅读模式生效**：编辑模式、桌面端、以及画板 / PDF 等非 Markdown 视图均不响应手势。
+1. **手势仅移动端阅读模式生效**：编辑模式、桌面端、以及画板 / PDF 等非 Markdown 视图均不响应滑动手势；桌面端使用命令面板或绑定快捷键。
 2. **极端公式仍需滚动**：`MIN_SCALE = 0.55` 下限以下的超长公式（如长矩阵）缩到 55% 后仍可能超宽，此时回退到 CSS 的 `overflow-x: auto` 横向滚动。缩放是「有损」的，缩小的公式在手机上可能偏小。
 3. **8px 尺寸容差可能误判**：主题自定义的、宽度接近容器的局部滚动容器可能被 `isPageLevelScrollContainer()` 视为页面级容器，从而不参与「先滚后翻」，该区域滑动会直接翻页。
 4. **系统级手势残留竞争**：捕获阶段 + 4px 拦截无法完全关闭与操作系统级手势（返回手势、通知栏下拉等）的竞争窗口；极端情况下侧边栏仍可能被拉出。
 5. **局部滚动区「先滚后翻」**：在公式 / 代码块 / 表格上需要先滚到边界再滑一次才翻页，单次滑动不能同时完成滚动与翻页。
 6. **MathJax 渲染时序**：MathJax 异步渲染，极慢的首帧下可能短暂显示未缩放状态。
-7. **导航范围固定**：只导航 md 直接子文件、按文件系统排序、不递归；`ctime` 排序依赖文件系统元数据，某些同步场景下不可靠。
+7. **导航范围取决于入口**：移动端手势和原有命令只导航 md 直接子文件；桌面端可以切换到整个 vault。`ctime` 排序依赖文件系统元数据，某些同步场景下不可靠。
 8. **并发丢弃而非排队**：`navigating` 标志使极速连滑的中间滑动被静默丢弃（4.2）。
 
 ---
@@ -328,6 +345,7 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 | 0.1.6 | 修复 CSS 导致公式压缩 / 裁切 / 拖不动；移除全部 `touch-action` 声明。 |
 | 0.1.7 | 宽公式自动等比缩小至页面宽度内（新增 `math-fit.ts`）；修正 CSS 选择器与 `min-width`。 |
 | 0.1.8 | 修正 `math-fit` 三处缺陷（id 混用、集合泄漏、横竖屏盲区）。 |
+| 0.1.9 | 新增桌面端前后文件导航与笔记末尾滚动命令；支持当前文件夹 / vault 范围，并可跟随 File Explorer 排序。 |
 
 ---
 
@@ -370,7 +388,7 @@ Swipe Folder Navigation 是一个 Obsidian 移动端插件（id：`swipe-folder-
 1. **手势冲突的可配置化**：4px 拦截阈值、是否拦截侧边栏等目前是硬编码常量，可考虑暴露为设置项，适配不同系统手势习惯。
 2. **编辑模式支持**：当前明确排除编辑模式；若未来支持，需处理与文本原生滚动、光标选择、文本选择的冲突。
 3. **切换过渡动画**：当前是内容直换（为消除闪烁刻意不做显式动画）；可提供可选的开页过渡，并确保不重新引入闪烁。
-4. **替代入口**：非触摸用户（桌面端、触控板）目前无入口；命令已存在，可扩展为按钮 / 状态栏项。
+4. **桌面端入口扩展**：当前通过命令面板和快捷键触发；可继续扩展为按钮或状态栏项。
 5. **公式换行跟进**：MathJax v4 实现 display 公式自动断行后，可重新评估「换行」方案，替代有损缩放。
 6. **导航规则扩展**：忽略指定文件夹 / 笔记、按标签或 frontmatter 过滤、支持子文件夹递归（可选）。
 7. **自动化回归**：当前全靠真机反馈驱动；引入基于触摸事件模拟的自动化测试可缩短「改→发版→用户测」循环，覆盖 4.1 / 4.3 / 4.4 等历史回归点。

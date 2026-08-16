@@ -1,7 +1,7 @@
 {
 	"name": "obsidian-swipe-folder-nav",
-	"version": "0.1.8",
-	"description": "Swipe left/right on Obsidian mobile to navigate to the previous/next note in the same folder.",
+	"version": "0.1.9",
+	"description": "Swipe between notes on mobile or navigate with desktop commands.",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",

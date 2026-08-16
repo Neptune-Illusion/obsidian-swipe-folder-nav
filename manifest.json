@@ -1,9 +1,9 @@
 {
 	"id": "swipe-folder-nav",
 	"name": "Swipe Folder Navigation",
-	"version": "0.1.8",
+	"version": "0.1.9",
 	"minAppVersion": "1.4.0",
-	"description": "Swipe left/right on mobile to go to the previous/next note in the same folder.",
+	"description": "Swipe on mobile or use desktop commands to navigate between notes.",
 	"author": "",
 	"authorUrl": "",
 	"isDesktopOnly": false

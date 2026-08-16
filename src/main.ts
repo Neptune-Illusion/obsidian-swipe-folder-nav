@@ -1,8 +1,9 @@
-import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import { App, Platform, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { DEFAULT_SETTINGS, SwipeFolderNavSettings } from "./settings";
 import { SwipeController, SwipeDirection } from "./swipe";
 import { FolderNavigator } from "./navigator";
 import { MathFitter } from "./math-fit";
+import { scrollPastEnd } from "./desktop-navigation";
 
 /**
  * Mount-point contracts (implemented).
@@ -72,6 +73,24 @@ export default class SwipeFolderNavPlugin extends Plugin {
 				void this.navigator?.openRelative(1);
 			},
 		});
+
+		if (Platform.isDesktop) {
+			this.addCommand({
+				id: "desktop-navigate-next-file",
+				name: "Navigate to next file",
+				checkCallback: (checking) => this.runDesktopNavigation(1, checking),
+			});
+			this.addCommand({
+				id: "desktop-navigate-previous-file",
+				name: "Navigate to previous file",
+				checkCallback: (checking) => this.runDesktopNavigation(-1, checking),
+			});
+			this.addCommand({
+				id: "desktop-scroll-past-end",
+				name: "Scroll past end of note",
+				editorCallback: (editor) => scrollPastEnd(editor),
+			});
+		}
 	}
 
 	onunload(): void {
@@ -89,6 +108,12 @@ export default class SwipeFolderNavPlugin extends Plugin {
 	 */
 	private handleSwipe(direction: SwipeDirection): void {
 		void this.navigator?.openRelative(direction === "left" ? 1 : -1);
+	}
+
+	private runDesktopNavigation(offset: 1 | -1, checking: boolean): boolean {
+		if (!this.app.workspace.getActiveFile()) return false;
+		if (!checking) void this.navigator?.openDesktopRelative(offset);
+		return true;
 	}
 
 	/**
@@ -207,5 +232,33 @@ export class SwipeFolderNavSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		if (Platform.isDesktop) {
+			new Setting(containerEl)
+				.setName("桌面端导航范围")
+				.setDesc("桌面端命令在当前文件夹或整个 vault 中切换笔记")
+				.addDropdown((dropdown) =>
+					dropdown
+						.addOption("folder", "当前文件夹")
+						.addOption("vault", "整个 vault")
+						.setValue(this.plugin.settings.desktopNavigationScope)
+						.onChange(async (value) => {
+							this.plugin.settings.desktopNavigationScope = value as "folder" | "vault";
+							await this.plugin.saveSettings();
+						})
+				);
+
+			new Setting(containerEl)
+				.setName("跟随文件浏览器排序")
+				.setDesc("桌面端命令使用 File Explorer 当前的文件名、创建时间或修改时间排序")
+				.addToggle((toggle) =>
+					toggle
+						.setValue(this.plugin.settings.desktopFollowFileExplorerSort)
+						.onChange(async (value) => {
+							this.plugin.settings.desktopFollowFileExplorerSort = value;
+							await this.plugin.saveSettings();
+						})
+				);
+		}
 	}
 }
